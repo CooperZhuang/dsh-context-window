@@ -1,13 +1,33 @@
 # 交接文档 — dsh-context-window
 
 > **给接手的人（或下一个会话的 agent）**：本文件是自包含的。你不需要之前的对话记录。
-> 最后更新：2026-09-09，对应 commit `ecde650`（`main`，CI 绿）。
+> 最后更新：2026-09-09，对应 commit `8204543`（`main`，CI 绿）。
 
 ---
 
 ## 0. 一句话现状
 
 仓库骨架已建好、已发布、CI 通过、42 个单测绿。**预算记账与提示已实现并可用**；**换窗的执行只实现了 `seam-region`（委托 seam），`handoff` 模式尚未实现**。插件默认 `enabled: false`，所以现在装上不会改变任何行为。
+
+**当前卡在一步**：`docs/design.md` §2 的 **U1**（交接内容从哪来）还没拍板。U1 决定 `handoff` 模式的形态，不定它就无法写代码。**新会话的第一件事就是让用户在这三个候选里选一个。**
+
+---
+
+## 0.5 在新工作区接上（用户的目标）
+
+用户会**在 DSH 里切换工作区**，把这件事接到新会话继续。接续步骤：
+
+1. **新会话的工作区选 `<REPO_ROOT>`**。
+   为什么这就够了：`dsh-agent-instructions` 会自动读取工作区根目录的 `AGENTS.md`，而 `AGENTS.md` 顶部第一句就指向本文件。**选对工作区 = 交接自动生效**，不需要用户粘贴任何背景。
+2. 用户如果只贴一句话，可以用这个：
+   ```
+   读 docs/handoff.md 和 docs/design.md，按 §7 的下一步执行。先让我拍板 U1。
+   ```
+3. 新会话开工前的三件事：
+   - `cd <REPO_ROOT> && pnpm check` —— 确认基线还是绿的（应 42 测试通过）；
+   - 读 `docs/design.md` §2 的 U1–U5；
+   - 把 U1 的三个候选（a 模板化 / b 换窗时跑一次模型 / c 提示模型预写 notes）用人话摆给用户，让他选。**不要替用户决定**——这直接决定交接内容的质量与成本。
+4. **不要**在用户明确同意前执行 `dsh plugin --profile web add dsh-context-window`：那会改他正在用的 web profile。
 
 ---
 
@@ -141,6 +161,8 @@ host 平面无后端时，`new_context` 请求**告警并丢弃**，不会静默
 
 ## 7. 下一步（按优先级）
 
+> **0. 先拍板 U1（阻塞项）** —— 见 §0.5 第 3 条。
+
 1. **拍板 `docs/design.md` §2 的 U1**（交接内容从哪来）：模板化抽取 vs 换窗时跑一次模型生成 vs 提示模型预写 notes。**U1 决定 handoff 的形态，必须先定。**
 2. **实现 `resetMode: 'handoff'`**：在 `executeReset` 里，换窗后把检查点写进新窗口。参考 `docs/design.md` U2（注入位置）与 U3（基线持久化）。
 3. **补 `settings.yaml` 的 `contextWindow`**（或在插件里对缺失窗口做更友好的降级）——否则真机验证看不到任何提示。
@@ -177,6 +199,8 @@ dsh plugin --profile web add dsh-context-window
 - [x] 挂载约束与陷阱已写入 `cordis.patch.yml` 注释、`AGENTS.md`、本文件
 - [x] 设计决策（已定 D1–D7 / 未定 U1–U5）记录在 `docs/design.md`
 - [x] 上游调研全文在 `%USERPROFILE%\.dsh\codex-context-management-report.md`
-- [ ] U1 拍板
+- [x] 交接文档写好并被 `AGENTS.md` / `README.md` 指向
+- [x] 用户决定：在 DSH 里切换工作区，把本任务接到新会话继续（接续步骤见 §0.5）
+- [ ] **U1 拍板（阻塞项，新会话第一件事）**
 - [ ] `handoff` 模式实现
 - [ ] 真机挂载验证
