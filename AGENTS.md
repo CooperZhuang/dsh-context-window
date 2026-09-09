@@ -1,5 +1,9 @@
 # dsh-context-window — AGENTS.md
 
+> **Picking this up cold? Read `docs/handoff.md` first** — it is self-contained:
+> current state, environment facts, the mounting constraint, the API map with
+> evidence locations, the trap list, and the prioritized next steps.
+
 Working notes for agents editing this repository. The user-facing documentation
 is `README.md`; the design rationale is `docs/design.md`.
 

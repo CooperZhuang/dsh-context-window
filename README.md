@@ -161,6 +161,8 @@ pnpm test       # 42 个单测
 
 `lib/` 是构建产物（tsdown + `tsc -p tsconfig.build.json`），不入库。
 
+**接手开发请先读 [`docs/handoff.md`](docs/handoff.md)**（自包含的交接文档：现状、环境事实、挂载约束、API 地图、陷阱清单、下一步）。设计决策见 [`docs/design.md`](docs/design.md)。
+
 ## 许可
 
 MIT
