@@ -13,6 +13,10 @@
  * | `noticeThresholds` | `TOKEN_BUDGET_USAGE_THRESHOLDS` | [25, 50, 75] |
  * | `resetReminderTemplate` | `reminder_message_template` | see notice.ts |
  *
+ * The `notes` / `handoff` knobs have no Codex counterpart: they implement
+ * design decision U1 as *a + c* — a template-assembled checkpoint floor plus a
+ * model-written notes section on top of it. Codex's reset path has only *c*.
+ *
  * @module dsh-context-window/config
  */
 import z from '@deepseek-ai/schemastery'
@@ -53,6 +57,20 @@ export interface Config {
   toolName: string
   /** How a reset builds the next window's content. */
   resetMode: ResetMode
+  /** Whether the model-facing `notes` tool is registered (U1 option *c*). */
+  notesToolEnabled: boolean
+  /** Name of the model-facing notes tool; the reminder template may name it. */
+  notesToolName: string
+  /** Maximum notes retained across a reset; the oldest is evicted first. */
+  maxNotes: number
+  /** Maximum characters per note; longer notes are truncated. */
+  maxNoteChars: number
+  /** Maximum open todos carried into a checkpoint. */
+  maxHandoffTodos: number
+  /** Maximum characters of the human's last request carried into a checkpoint. */
+  maxHandoffRequestChars: number
+  /** Maximum characters of the recovered prior-checkpoint notes section. */
+  maxRecoveredNoteChars: number
 }
 
 /** Schemastery schema for {@link Config}. */
@@ -70,6 +88,13 @@ export const Config: z<Config> = z.object({
   toolEnabled: z.boolean().default(true),
   toolName: z.string().default('new_context'),
   resetMode: z.union(['seam-region', 'handoff'] as const).default('seam-region'),
+  notesToolEnabled: z.boolean().default(true),
+  notesToolName: z.string().default('notes'),
+  maxNotes: z.number().default(8),
+  maxNoteChars: z.number().default(500),
+  maxHandoffTodos: z.number().default(12),
+  maxHandoffRequestChars: z.number().default(2_000),
+  maxRecoveredNoteChars: z.number().default(2_000),
 })
 
 /**
@@ -92,5 +117,19 @@ export function assertConfig(config: Config): void {
   }
   if (config.toolEnabled && config.toolName.trim() === '') {
     throw new TypeError('context-window: toolName must not be empty when the reset tool is enabled')
+  }
+  if (config.notesToolEnabled && config.notesToolName.trim() === '') {
+    throw new TypeError('context-window: notesToolName must not be empty when the notes tool is enabled')
+  }
+  for (const [field, value, min] of [
+    ['maxNotes', config.maxNotes, 0],
+    ['maxNoteChars', config.maxNoteChars, 1],
+    ['maxHandoffTodos', config.maxHandoffTodos, 0],
+    ['maxHandoffRequestChars', config.maxHandoffRequestChars, 0],
+    ['maxRecoveredNoteChars', config.maxRecoveredNoteChars, 0],
+  ] as const) {
+    if (!Number.isInteger(value) || value < min) {
+      throw new RangeError(`context-window: ${field} must be an integer >= ${min}, got ${String(value)}`)
+    }
   }
 }

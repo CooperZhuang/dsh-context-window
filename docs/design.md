@@ -69,11 +69,45 @@ DSH 的请求在 LLM 边界 deep-frozen（`markAgentLoopRequest`），listener �
 
 `enabled: false`。插件的 bundle patch 只插入一行，装完不改行为。
 
+### D8. `handoff` 是**无摘要**换窗，自己写 surface 替换（U1 拍板后新增）
+
+`handoff` 模式**不调用 `ctx.compaction`**：`CompactionEngine.compactRegion` 在 `compaction-basic` 里总是先跑一次模型摘要（`regionDependencies().summarize`），而"换窗"存在的意义恰恰是省掉那次调用。因此 `handoff` 自己写替换（`src/replace.ts`）：
+
+```text
+session.append('compaction/prune', { shadowedRange, shadowedSeqs, shadowedTokenCount })
+session.append('user/message', checkpoint, { surfaceOp: {op:'replace', start, end}, sourceEventSeqs: shadowed })
+```
+
+两个协议细节是必须的，不是可选的：
+
+1. **`compaction/prune` 影子价**：token meter 的 fold 规则是"没有 armed claim 的 replacement 记 0 delta"（`dsh-token-meter/lib/index.js` 的 `_foldEvent`）。不写这条事件，被替换掉的那段会**永远算在预算里**。
+2. **同步连续**：两条 append 之间不能有事件插进来，否则影子价会配错替换。
+
+代价（有意接受）：
+- 不产生 `compaction/start`/`compaction/summary`/`compaction/end` 事件，所以这一窗口的换窗在 `/compact` 的 UI 与统计里不可见；
+- 绕开了 seam 的 bracket 锁，插件自己用 `hasOpenCompaction()`（扫描未配对的 `compaction/start`）做护栏，有未闭合事务时把换窗推迟到下一个边界；
+- `seam-region` 模式保留原样（委托 `compactRegion`，会摘要），供"想复用 compaction 后端记账"的部署使用。
+
+**为什么这是对的**：Codex 的换窗实现 `compact_token_budget.rs` 就是跳过模型/服务端摘要、直接装回全新 initial context（报告 §6）。U1 的选项 **b**（换窗时跑一次模型生成摘要）被明确排除出 `handoff`；如果将来要 b，应作为独立的 `resetMode` 加入，而不是混进 handoff。
+
+### D9. U1 = a + c：模板化骨架 + 模型预写 notes
+
+拍板结果（2026-09-09）：
+
+- **a（模板化）**：`src/handoff.ts` 从**现成状态**拼骨架——goal 投影（`objective`/`phase`/`blockedReason`）、未完成的 todos（`todos` 投影，丢弃 `completed`）、最后一条**人类**消息（`source.kind === 'user'`，刻意排除 tool result 与本插件自己的快照）。零模型调用。
+- **c（模型预写）**：注册模型可调用的 `notes` 工具（`src/index.ts`），把笔记写进 per-session 缓冲；重置预告文案（`DEFAULT_RESET_REMINDER_TEMPLATE`）里点名要求模型换窗前调用它。
+- **两者的缝合点**：notes 随检查点写入新窗口，写入后清空缓冲——否则每个窗口都重发同一批笔记，越换越胖（§3 风险清单的"交接内容重复累积"）。
+- **持久性**：进程重启会丢内存里的 notes，所以 notes 也**可从日志回读**：`readPriorCheckpointNotes()` 从面上最新的 `<context_handoff>` 里解析 `<notes>` 段，`boundNotes()` 再按 `maxRecoveredNoteChars` 截断。这是 U3 的部分解法，不需要额外的 storage domain。
+
+投影读取是**可选**的：`ctx.sessionProjections` 缺失、键未注册、值畸形或抛错，都只让对应段落消失，绝不让换窗路径抛异常。
+
 ---
 
 ## 2. 未定的决策（需要在实现 handoff 前拍板）
 
-### U1. 交接内容从哪来？
+> **U1 与 U2 已拍板**（见 §1 的 D8/D9）。下面保留原始三候选表作为决策记录。
+
+### U1. 交接内容从哪来？ —— ✅ 已定：**a + c**（见 D9）
 
 三个候选：
 
@@ -83,22 +117,14 @@ DSH 的请求在 LLM 边界 deep-frozen（`markAgentLoopRequest`），listener �
 | b. 模型生成 | 换窗时先跑一次 handoff 摘要调用 | 一次模型调用（正是换窗想省掉的） | 回到摘要压缩的老问题，但**只在换窗时付一次**，而非每轮 |
 | c. 模型预写 | 提示里要求模型在换窗前调用 notes 工具写交接 | 无额外调用 | 依赖模型自觉（Codex #43335 的教训） |
 
-倾向 **a + c 混合**：模板化骨架（目标/已完成/下一步）+ 提醒模型用 notes 补细节。b 作为可选 `resetMode: 'handoff-summarize'`。
+**拍板：a + c 混合** —— 模板化骨架保证下限，再提醒模型用 notes 补细节。b 未采纳（见 D8）。
 
-**人话版（给用户决策用）**：换窗之后，新窗口里得有点东西让模型知道"我在干嘛"。这份东西从哪来，三种：
-
-- **a. 自动拼** —— 不花模型调用，从现成的状态里凑（待办列表、目标、最后一条用户消息）。便宜、稳定，但可能漏关键约束。
-- **b. 让它写** —— 换窗前多花一次模型调用，专门写一份交接。质量最好，但这就是压缩模式的老成本，只是从"每轮"变成"每次换窗"。
-- **c. 让它先写** —— 什么都不做，靠提示词要求模型在换窗前自己调 notes 写下来。零成本，但**依赖模型自觉**——Codex 现在的换窗正是这条路，结果就是 issue #43335 那个"换窗后第一个请求没有任务状态"。
-
-官方现在的换窗 = c（翻车）；官方压缩模式 = b 的变体（每次都付）。本项目倾向 **a + c**：自动拼骨架保证下限，再提醒模型补细节。
-
-### U2. 交接内容注入到哪？
+### U2. 交接内容注入到哪？ —— ✅ 已定：**检查点 user 消息**（surface replace）
 
 - 作为新窗口的 checkpoint user 消息（与 seam 的替换语义一致）→ 会被计入后续换窗的"待压缩区"，需要防重复累积。
 - 作为 plugin snapshot context（`systemPrompt.context` 或 pre-step 注入）→ 不进 surface，但每次换窗都要重发。
 
-倾向：**checkpoint user 消息**，因为 seam 的替换就是这个形状，且 replay 可见。
+**拍板：checkpoint user 消息**，与 seam 的替换形状一致、replay 可见。防重复累积由 D9 处理：notes 写入后清空缓冲，且只从面上**最新**的一个检查点回读。
 
 ### U3. 窗口基线的持久化
 
@@ -131,9 +157,11 @@ DSH 的请求在 LLM 边界 deep-frozen（`markAgentLoopRequest`），listener �
 |---|---|---|
 | token meter 启发式低估 CJK | 阈值偏晚，换窗来不及 | 阈值保守（95%/90% 已留头寸）；优先用 provider usage anchor |
 | 模型未声明 `contextWindow` | 提示完全关闭 | 启动告警一次；文档要求先补 `settings.yaml` 的 `contextWindow` |
-| host 平面无 `ctx.compaction` | 换窗请求被丢弃 | 告警 + 文档写明挂载位置 |
+| host 平面无 `ctx.compaction` | `seam-region` 换窗请求被丢弃 | 告警 + 文档写明挂载位置。`handoff` 模式不需要后端 |
 | 换窗后模型重新探索 | 总 token 未必下降 | 文档明示这是"可观测的失败优于静默的失败"，不是省钱手段 |
-| 交接内容重复累积 | 新窗口越换越胖 | U2 需给出防重复策略 |
+| 交接内容重复累积 | 新窗口越换越胖 | ✅ 已缓解：notes 写入后清空；只从最新检查点回读；notes/todos/请求文本都有上限 |
+| `handoff` 自写 surface 与并发压缩冲突 | 两条替换交错 | ✅ 已缓解：`hasOpenCompaction()` 护栏，有未闭合事务时推迟到下一个边界 |
+| `handoff` 换窗在 `/compact` UI 中不可见 | 用户看不出发生过换窗 | 接受（D8）；日志里有 `handoff: window N -> M` 一行 |
 
 ---
 
@@ -145,3 +173,5 @@ DSH 的请求在 LLM 边界 deep-frozen（`markAgentLoopRequest`），listener �
 4. `new_context` 调用后，下一次请求的历史**不含**旧窗口的 user/assistant 消息，且**含**交接检查点。
 5. 悬空 tool call 时调用 `new_context`，换窗被推迟到下一个边界且**不破坏 tool 配对**。
 6. replay 该会话日志，`deriveMessages()` 与当时一致。
+7. `handoff` 换窗**不产生任何模型调用**，且被替换区段的 token 从预算中扣除（`compaction/prune` 影子价）。
+8. 换窗后的检查点含 goal / 未完成 todos / 模型 notes / 最后一条人类请求（各自缺失时对应段落消失，不报错）。

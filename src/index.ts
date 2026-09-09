@@ -18,10 +18,13 @@
  *   tool while `compaction-basic` keeps handling pressure.
  *
  * v0 status: the notice and budget accounting are complete and unit-tested.
- * `resetMode: 'handoff'` (write a checkpoint into the fresh window instead of
- * relying on the model to read notes — Codex open issue #43335) is declared and
- * validated but NOT implemented; `resetMode: 'seam-region'` delegates the
- * replacement to `ctx.compaction.compactRegion` over the whole balanced surface.
+ * `resetMode: 'seam-region'` delegates the replacement to
+ * `ctx.compaction.compactRegion` over the whole balanced surface.
+ * `resetMode: 'handoff'` needs no compaction backend: it replaces the surface
+ * itself with a template-assembled checkpoint and pays no summarization call —
+ * design decision U1 option *a*, fed by the model-facing `notes` tool that
+ * option *c* asks the model to call. A handoff window therefore never opens
+ * with no task state, which is Codex's open issue #43335.
  *
  * @module dsh-context-window
  */
@@ -38,7 +41,15 @@ import type { BudgetSnapshot } from './budget.ts'
 import { assertConfig, Config } from './config.ts'
 import type { Config as ConfigShape } from './config.ts'
 import { NoticeThrottle, normalizeNoticeThresholds } from './emission.ts'
-import { assertReminderTemplate, renderResetReminder, renderWindowNotice } from './notice.ts'
+import { boundNotes, extractHandoff, NotesBuffer, readPriorCheckpointNotes } from './handoff.ts'
+import type { ProjectionReader } from './handoff.ts'
+import {
+  assertReminderTemplate,
+  renderHandoffCheckpoint,
+  renderResetReminder,
+  renderWindowNotice,
+} from './notice.ts'
+import { hasOpenCompaction, replaceSurfaceWithCheckpoint } from './replace.ts'
 import { WindowState } from './window-state.ts'
 
 /** Plugin name, also the `source.plugin` label of every injected notice. */
@@ -59,6 +70,10 @@ export type { ConfigShape as ContextWindowConfig }
 interface SessionRuntime {
   readonly window: WindowState
   readonly throttle: NoticeThrottle
+  /** Notes the model wrote for the next window; carried into the checkpoint. */
+  readonly notes: NotesBuffer
+  /** Whether the notes were seeded from a previous checkpoint after a resume. */
+  notesSeeded: boolean
   /** Set by the `new_context` tool, consumed at the next pre-step. */
   resetRequested: boolean
   /** Whether a notice has been injected for the current window. */
@@ -91,6 +106,8 @@ export function apply(ctx: Context, config: ConfigShape): void {
     const created: SessionRuntime = {
       window: new WindowState(),
       throttle: new NoticeThrottle(thresholds),
+      notes: new NotesBuffer(config.maxNotes, config.maxNoteChars),
+      notesSeeded: false,
       resetRequested: false,
       noticeSent: false,
       reminderSent: false,
@@ -111,6 +128,14 @@ export function apply(ctx: Context, config: ConfigShape): void {
 
     const { agent } = payload
     const runtime = runtimeFor(agent.session)
+
+    if (!runtime.notesSeeded) {
+      runtime.notesSeeded = true
+      if (runtime.notes.isEmpty) {
+        const recovered = readPriorCheckpointNotes(agent.session)
+        if (recovered.length > 0) runtime.notes.seed(boundNotes(recovered, config.maxRecoveredNoteChars))
+      }
+    }
 
     if (runtime.resetRequested) {
       runtime.resetRequested = false
@@ -167,6 +192,45 @@ export function apply(ctx: Context, config: ConfigShape): void {
       },
     })
     ctx.effect(() => ctx.tools.register(tool), 'context-window: new_context tool')
+  }
+
+  if (config.notesToolEnabled) {
+    const tool = defineTool({
+      name: config.notesToolName,
+      description: 'Record a note that must survive into the next context window. '
+        + 'Call this before the window resets; the notes are carried into the new window verbatim.',
+      parameters: {
+        note: { type: 'string', required: true, description: 'One self-contained note: a decision, a constraint, or the next concrete step.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            message: { type: 'string', required: true },
+            notes: { type: 'array', items: { type: 'string' }, required: true },
+          },
+        },
+        render: (_args, value) => [
+          { type: 'text', text: (value as { message: string }).message },
+        ],
+      },
+      execute: async (args, exec) => {
+        const agent = exec.agent
+        if (agent === undefined) {
+          return { message: 'Notes can only be recorded from an agent session.', notes: [] }
+        }
+        const runtime = runtimeFor(agent.session)
+        const retained = runtime.notes.add(args.note)
+        return {
+          message: retained
+            ? `Noted (${runtime.notes.list().length}/${config.maxNotes} notes retained for the next window).`
+            : 'The note was empty or the notes budget is zero — nothing was recorded.',
+          notes: [...runtime.notes.list()],
+        }
+      },
+    })
+    ctx.effect(() => ctx.tools.register(tool), 'context-window: notes tool')
   }
 
   logger.info('enabled — resetMode=%s, thresholds=%s', config.resetMode, thresholds.join('/'))
@@ -246,7 +310,11 @@ async function buildNotice(
   }
   if (reminderDue) {
     runtime.reminderSent = true
-    parts.push(renderResetReminder(config.resetReminderTemplate, budget.remainingTokens))
+    parts.push(renderResetReminder(
+      config.resetReminderTemplate,
+      budget.remainingTokens,
+      config.notesToolEnabled ? config.notesToolName : undefined,
+    ))
   }
   return parts.join('\n\n')
 }
@@ -254,11 +322,17 @@ async function buildNotice(
 /**
  * Perform one reset at a pre-step boundary.
  *
- * `seam-region` delegates to the mounted compaction backend over the whole
- * balanced surface: the backend owns the durable bracket, the checkpoint
- * marker, and the shadow-price bookkeeping, so this plugin never writes a
- * surface replacement itself. `handoff` is declared but unimplemented in v0 and
- * reports that instead of silently degrading to a bare reset.
+ * The two modes build the replacement differently:
+ *
+ * - `seam-region` delegates to the mounted compaction backend over the whole
+ *   balanced surface, so the backend owns the durable bracket, the checkpoint
+ *   marker, and the shadow-price bookkeeping.
+ * - `handoff` writes the surface replacement itself (see
+ *   {@link writeCheckpoint}) and needs no `ctx.compaction` at all: it installs
+ *   a template-assembled checkpoint as the fresh window's only message, with no
+ *   summarization call. This is design decision U1 option *a* fed by the
+ *   `notes` tool of option *c*, and it is the mode that avoids Codex's open
+ *   issue #43335.
  * @param ctx - plugin context.
  * @param config - validated configuration.
  * @param runtime - the requesting session's runtime state.
@@ -273,19 +347,6 @@ async function executeReset(
   signal: AbortSignal,
 ): Promise<void> {
   const logger = ctx.logger(name)
-  if (config.resetMode === 'handoff') {
-    logger.warn('resetMode "handoff" is not implemented in v0 — the request is dropped')
-    return
-  }
-
-  const compaction = ctx.get('compaction') as CompactionEngine | undefined
-  if (compaction === undefined) {
-    if (!runtime.warnedNoCompaction) {
-      runtime.warnedNoCompaction = true
-      logger.warn('no compaction backend in this scope — a reset request cannot be executed here')
-    }
-    return
-  }
 
   const session = agent.session
   const nodes = session.surface.nodes
@@ -304,11 +365,94 @@ async function executeReset(
     return
   }
 
-  await compaction.compactRegion(first, last, agent, signal)
+  if (hasOpenCompaction(session)) {
+    logger.warn('a compaction transaction is open — the reset is deferred to the next boundary')
+    runtime.resetRequested = true
+    return
+  }
+
+  // The handoff must be assembled while the outgoing window is still on the
+  // surface: the replacement below removes every node it reads.
+  const handoff = config.resetMode === 'handoff'
+    ? extractHandoff({
+        session,
+        from: { ordinal: runtime.window.snapshot().ordinal, id: runtime.window.snapshot().currentId },
+        notes: runtime.notes.list(),
+        stateOf: projectionReader(ctx),
+        maxTodos: config.maxHandoffTodos,
+        maxRequestChars: config.maxHandoffRequestChars,
+      })
+    : undefined
+
+  if (handoff === undefined) {
+    const compaction = ctx.get('compaction') as CompactionEngine | undefined
+    if (compaction === undefined) {
+      if (!runtime.warnedNoCompaction) {
+        runtime.warnedNoCompaction = true
+        logger.warn('no compaction backend in this scope — a reset request cannot be executed here')
+      }
+      return
+    }
+    try {
+      await compaction.compactRegion(first, last, agent, signal)
+    } catch (error) {
+      logger.warn('compaction refused the reset: %s', String(error))
+      return
+    }
+    advanceWindow(runtime)
+    return
+  }
+
+  advanceWindow(runtime)
+
+  const snapshot = runtime.window.snapshot()
+  try {
+    const text = renderHandoffCheckpoint({ ...handoff, toOrdinal: snapshot.ordinal, toId: snapshot.currentId })
+    replaceSurfaceWithCheckpoint({
+      session,
+      text,
+      shadowed: nodes,
+      source: { plugin: name, section: `${name}:handoff` },
+      meter: ctx.get('tokenMeter') as TokenMeter | undefined,
+    })
+  } catch (error) {
+    logger.warn('the handoff checkpoint could not be written — the window keeps its history: %s', String(error))
+    return
+  }
+
+  runtime.notes.clear()
+  logger.info(
+    'handoff: window %d -> %d, %d note(s), %d open todo(s)%s',
+    snapshot.ordinal - 1,
+    snapshot.ordinal,
+    handoff.notes.length,
+    handoff.todos.length,
+    handoff.goal === undefined ? '' : ', goal carried',
+  )
+}
+
+/**
+ * Reset the per-window emission state after the surface was replaced.
+ * @param runtime - the reset session's runtime state.
+ */
+function advanceWindow(runtime: SessionRuntime): void {
   runtime.window.startNext()
   runtime.throttle.reset()
   runtime.noticeSent = false
   runtime.reminderSent = false
+}
+
+/**
+ * Resolve the optional session-projection reader.
+ * @param ctx - plugin context.
+ * @returns a reader, or `undefined` when no projection registry is mounted.
+ */
+function projectionReader(ctx: Context): ProjectionReader | undefined {
+  const registry = ctx.get('sessionProjections') as
+    | { stateOf?: (session: Session, key: string) => unknown }
+    | undefined
+  if (registry === undefined || typeof registry.stateOf !== 'function') return undefined
+  return (session, key) => registry.stateOf?.(session, key)
 }
 
 /**

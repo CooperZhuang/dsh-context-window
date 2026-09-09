@@ -1,15 +1,17 @@
 # 交接文档 — dsh-context-window
 
 > **给接手的人（或下一个会话的 agent）**：本文件是自包含的。你不需要之前的对话记录。
-> 最后更新：2026-09-09，对应 commit `8204543`（`main`，CI 绿）。
+> 最后更新：2026-09-09，`handoff` 模式已实现（82 个单测绿，`pnpm check` 全绿）。
 
 ---
 
 ## 0. 一句话现状
 
-仓库骨架已建好、已发布、CI 通过、42 个单测绿。**预算记账与提示已实现并可用**；**换窗的执行只实现了 `seam-region`（委托 seam），`handoff` 模式尚未实现**。插件默认 `enabled: false`，所以现在装上不会改变任何行为。
+仓库骨架已建好、已发布、CI 通过、**82 个单测绿**。预算记账与提示**已实现并可用**；**`handoff` 与 `seam-region` 两种换窗都已实现**。插件默认 `enabled: false`，所以现在装上不会改变任何行为。
 
-**当前卡在一步**：`docs/design.md` §2 的 **U1**（交接内容从哪来）还没拍板。U1 决定 `handoff` 模式的形态，不定它就无法写代码。**新会话的第一件事就是让用户在这三个候选里选一个。**
+**U1/U2 已拍板**（a + c 混合 / 检查点 user 消息，见 `docs/design.md` §1 D8–D9），阻塞项解除。
+
+**当前卡在**：真机挂载冒烟（需要用户同意改他正在用的 web profile），以及 §7 里剩下的第 3 项（`settings.yaml` 补 `contextWindow`）。
 
 ---
 
@@ -21,12 +23,11 @@
    为什么这就够了：`dsh-agent-instructions` 会自动读取工作区根目录的 `AGENTS.md`，而 `AGENTS.md` 顶部第一句就指向本文件。**选对工作区 = 交接自动生效**，不需要用户粘贴任何背景。
 2. 用户如果只贴一句话，可以用这个：
    ```
-   读 docs/handoff.md 和 docs/design.md，按 §7 的下一步执行。先让我拍板 U1。
+   读 docs/handoff.md 和 docs/design.md，按 §7 的下一步执行。
    ```
-3. 新会话开工前的三件事：
-   - `cd <REPO_ROOT> && pnpm check` —— 确认基线还是绿的（应 42 测试通过）；
-   - 读 `docs/design.md` §2 的 U1–U5；
-   - 把 U1 的三个候选（a 模板化 / b 换窗时跑一次模型 / c 提示模型预写 notes）用人话摆给用户，让他选。**不要替用户决定**——这直接决定交接内容的质量与成本。
+3. 新会话开工前的两件事：
+   - `cd <REPO_ROOT> && pnpm check` —— 确认基线还是绿的（应 **82** 测试通过）；
+   - 读 `docs/design.md` §1 的 D1–D9 与 §7 的下一步。
 4. **不要**在用户明确同意前执行 `dsh plugin --profile web add dsh-context-window`：那会改他正在用的 web profile。
 
 ---
@@ -73,24 +74,25 @@ DSH（DeepSeek Harness）插件，复刻 Codex 从 0.153.0 起的**实验性上�
 
 ## 3. 已完成 vs 未完成
 
-### ✅ 已实现（`src/`，42 个单测覆盖）
+### ✅ 已实现（`src/`，82 个单测覆盖）
 
 | 文件 | 内容 |
 |---|---|
 | `src/budget.ts` | `usable = floor(cw×95%)`、`limit = min(配置, floor(cw×90%))`、`charged = used − baseline`（body_after_prefix）、`threshold = min(limit + buffer, usable)`；全部纯函数，越界即抛 |
-| `src/window-state.ts` | 窗口世代：ordinal + first/previous/current id 链；`observePrefill`（服务端观测）**优先于** `estimatePrefill` 且不被覆盖；`startNext()` 清基线 |
-| `src/notice.ts` | `<context_window>` 提示文本（含窗口 id 链）、换窗预告（默认文案与 Codex 一字不差）、模板校验 |
+| `src/window-state.ts` | 窗口世代：ordinal + first/previous/current id 链；`observePrefill`（服务端观测）**优先于**`estimatePrefill` 且不被覆盖；`startNext()` 清基线 |
+| `src/notice.ts` | `<context_window>` 提示、换窗预告（默认文案 = Codex 原文 + notes 工具一句）、`<context_handoff>` 检查点渲染、`extractNotesSection` 回读、模板校验 |
 | `src/emission.ts` | `NoticeThrottle`：消耗跨过 25/50/75% 各发一次，每窗口重置 |
-| `src/config.ts` | schemastery schema + `assertConfig` 加载期 fail-loud |
-| `src/index.ts` | 接线：懒解析服务、`agent/pre-step` 注入提示与预告、`new_context` 工具（置标志）、`executeReset()` 委托 `compactRegion` |
+| `src/config.ts` | schemastery schema + `assertConfig` 加载期 fail-loud（含 notes/handoff 上限） |
+| `src/handoff.ts` | **U1 option a**：从 goal/todos 投影 + 最后一条人类消息拼骨架；`NotesBuffer`（option c 的容器）；`readPriorCheckpointNotes` 从日志回读 notes |
+| `src/replace.ts` | **无摘要换窗**：`compaction/prune` 影子价 + `user/message` 整面 `replace`；`hasOpenCompaction` 并发护栏 |
+| `src/index.ts` | 接线：懒解析服务、`agent/pre-step` 注入提示与预告、`new_context` 工具（置标志）、`notes` 工具、`executeReset` 分派两种模式 |
 
-### ⛔ 未实现（关键）
+### ⛔ 未实现
 
-- **`resetMode: 'handoff'`**：已声明、已校验、**调用时告警并丢弃**（`src/index.ts` 的 `executeReset` 开头分支）。这是本项目存在的理由，也是下一步的第一优先。
-- notes / history 工具（跨窗口检索）。
+- history 工具（跨窗口检索；notes 已实现）。
 - 浏览器半（UI 显示窗口序号/剩余量）。
 - 真机挂载冒烟（`dsh plugin add` + headless 渲染）。
-- 基线持久化（现在只在内存 `Map<sessionId, SessionRuntime>`，进程重启/resume 后丢）。
+- 基线持久化（`baselinePrefillTokens` 现在只在内存 `Map<sessionId, SessionRuntime>`；notes 已能从日志回读，基线还不行）。
 
 ---
 
@@ -134,8 +136,10 @@ host 平面无后端时，`new_context` 请求**告警并丢弃**，不会静默
 | 注入上下文 | `agent/pre-step` waterfall 返回 `{...decision, messages: [...decision.messages, createUserMessage({...})]}` | `dsh-agent\lib\types\runtime-types.d.ts:239-245,50-57` |
 | 消息构造 | `createUserMessage({content, source: {kind:'plugin', plugin, form:'snapshot', sections}})` | `dsh-llm\lib\types\message.d.ts:171` |
 | 注册工具 | `ctx.tools.register(defineTool({name, description, parameters, output, execute}))` | `dsh-tools\lib\types\index.d.ts:602`；`schema.d.ts:176-208` |
+| 读投影（可选） | `ctx.sessionProjections.stateOf(session, 'todos' \| 'goal')` | `dsh-session-projection\lib\types\index.d.ts:175`；键声明在 `dsh-tool-todo\lib\types\types.d.ts:34-46`、`dsh-goal\lib\types\types.d.ts:94-107` |
+| 影子价协议 | `compaction/prune`（无 armed claim 的 replace 记 0 delta） | `dsh-compaction\lib\types\types.d.ts:79-98`；fold 规则 `dsh-token-meter\lib\index.js` 的 `_foldEvent` |
 | 换窗世代 | `AutoCompactWindow` 的语义参考 | 报告 §4 |
-| 直接改历史（未用） | `session.append('user/message', data, {surfaceOp:{op:'replace',start,end}, sourceEventSeqs})` | `dsh-session\lib\types\types.d.ts:390-421` |
+| 直接改历史（`handoff` 用） | `session.append('user/message', msg, {surfaceOp:{op:'replace',start,end}, sourceEventSeqs})` | `dsh-session\lib\types\types.d.ts:390-421`；`session.append` 签名 `index.d.ts:198-233` |
 
 **请求不可改写**：loop 构造的请求 deep-frozen 且带 `markAgentLoopRequest`，`llm/stream` listener 只能读（`dsh-llm\lib\types\index.d.ts:35-41`）。模型可见内容只能走 `agent/pre-step` / `agent.inject()` / 已注册的 prompt 段。
 
@@ -161,14 +165,13 @@ host 平面无后端时，`new_context` 请求**告警并丢弃**，不会静默
 
 ## 7. 下一步（按优先级）
 
-> **0. 先拍板 U1（阻塞项）** —— 见 §0.5 第 3 条。
-
-1. **拍板 `docs/design.md` §2 的 U1**（交接内容从哪来）：模板化抽取 vs 换窗时跑一次模型生成 vs 提示模型预写 notes。**U1 决定 handoff 的形态，必须先定。**
-2. **实现 `resetMode: 'handoff'`**：在 `executeReset` 里，换窗后把检查点写进新窗口。参考 `docs/design.md` U2（注入位置）与 U3（基线持久化）。
-3. **补 `settings.yaml` 的 `contextWindow`**（或在插件里对缺失窗口做更友好的降级）——否则真机验证看不到任何提示。
-4. **真机挂载冒烟**：`dsh plugin --profile web add dsh-context-window` → 设 `enabled: true` → 观察提示是否出现、`new_context` 是否可用。⚠️ 这会改用户正在用的 web profile，**动手前先问用户**。
-5. **notes / history 工具**（跨窗口接续的第二半）。
-6. 浏览器半：在已有 `ContextMeter` 上加窗口序号/剩余量。
+1. ~~拍板 U1~~ ✅ 已定（a + c，见 `docs/design.md` D9）。
+2. ~~实现 `resetMode: 'handoff'`~~ ✅ 已实现（无摘要换窗，见 D8）。
+3. **补 `settings.yaml` 的 `contextWindow`**（或在插件里对缺失窗口做更友好的降级）——否则真机验证看不到任何提示。**注意：这要改用户设置，先问。**
+4. **真机挂载冒烟**：`dsh plugin --profile web add dsh-context-window` → 设 `enabled: true` → 观察提示是否出现、`new_context` / `notes` 是否可用、换窗后新窗口里是否有 `<context_handoff>`。⚠️ 这会改用户正在用的 web profile，**动手前先问用户**。
+5. **history 工具**（跨窗口接续的第二半；notes 已完成）。
+6. 基线持久化（U3 剩余部分；notes 已能回读，基线还只在内存）。
+7. 浏览器半：在已有 `ContextMeter` 上加窗口序号/剩余量。
 
 ---
 
@@ -195,12 +198,13 @@ dsh plugin --profile web add dsh-context-window
 
 ## 9. 交接清单
 
-- [x] 仓库已发布、CI 绿、42 测试通过
+- [x] 仓库已发布、CI 绿、82 测试通过
 - [x] 挂载约束与陷阱已写入 `cordis.patch.yml` 注释、`AGENTS.md`、本文件
-- [x] 设计决策（已定 D1–D7 / 未定 U1–U5）记录在 `docs/design.md`
+- [x] 设计决策（已定 D1–D9 / 未定 U3–U5）记录在 `docs/design.md`
 - [x] 上游调研全文在 `%USERPROFILE%\.dsh\codex-context-management-report.md`
 - [x] 交接文档写好并被 `AGENTS.md` / `README.md` 指向
 - [x] 用户决定：在 DSH 里切换工作区，把本任务接到新会话继续（接续步骤见 §0.5）
-- [ ] **U1 拍板（阻塞项，新会话第一件事）**
-- [ ] `handoff` 模式实现
+- [x] **U1 拍板：a + c 混合**
+- [x] `handoff` 模式实现（无摘要换窗 + 模板检查点 + notes 工具）
 - [ ] 真机挂载验证
+- [ ] 基线持久化（U3 剩余）

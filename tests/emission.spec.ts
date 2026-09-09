@@ -49,6 +49,13 @@ describe('assertConfig', () => {
     toolEnabled: true,
     toolName: 'new_context',
     resetMode: 'seam-region',
+    notesToolEnabled: true,
+    notesToolName: 'notes',
+    maxNotes: 8,
+    maxNoteChars: 500,
+    maxHandoffTodos: 12,
+    maxHandoffRequestChars: 2_000,
+    maxRecoveredNoteChars: 2_000,
   }
 
   it('accepts the shipped defaults', () => {
