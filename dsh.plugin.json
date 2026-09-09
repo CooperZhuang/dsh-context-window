@@ -1,0 +1,13 @@
+{
+  "id": "dsh-external/dsh-context-window",
+  "version": "0.0.1",
+  "main": "./lib/index.js",
+  "description": "Codex 风格上下文管理：token 预算提示 / 模型可调用的 new_context / 交接式换窗替代摘要压缩",
+  "engines": {
+    "dsh": ">=0.1.2-rc.1"
+  },
+  "contributes": {
+    "tools": [],
+    "skills": []
+  }
+}

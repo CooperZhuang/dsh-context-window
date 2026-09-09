@@ -1,0 +1,15 @@
+# Keep the repository byte-identical across platforms: sources are LF in the
+# index and on disk, regardless of the contributor's core.autocrlf.
+* text=auto eol=lf
+
+# Binary assets must never be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.tgz binary
+
+# Generated and vendored trees stay out of diffs.
+pnpm-lock.yaml linguist-generated=true

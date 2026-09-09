@@ -1,0 +1,83 @@
+{
+  "name": "dsh-context-window",
+  "version": "0.0.1",
+  "description": "DSH plugin: Codex-style context management — token-budget notice, model-facing new_context, and handoff reset instead of summary compaction.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CooperZhuang/dsh-context-window"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@12.3.4",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "src",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "README_EN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
+    "prepublishOnly": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "bundle": "tsdown",
+    "watch": "tsdown --watch",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "check": "pnpm typecheck && pnpm lint && pnpm build && pnpm test",
+    "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\""
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-token-meter": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-token-meter": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.9.1",
+    "tsdown": "^0.23.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.69.0",
+    "vitest": "^5.0.0"
+  }
+}

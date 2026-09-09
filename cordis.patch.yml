@@ -1,0 +1,59 @@
+# dsh-context-window bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the published npm package. When
+# the plugin is installed through the official CLI —
+#
+#   dsh plugin --profile <name> add dsh-context-window@<version>
+#
+# — the command reconciles `dsh.profile.bundles` against installed packages
+# and, seeing this declaration, appends `dsh-context-window` to the bundle
+# stack. Profile boot then merges THIS patch exactly like a hand-written mount
+# line, so one command installs and mounts.
+#
+# v0 SHIPS INERT: `enabled: false` is the plugin's own default, and the row
+# below states it explicitly so the knob is visible. With it off the plugin
+# registers nothing and a session behaves exactly as before.
+#
+# ── Mounting constraint (read before enabling) ───────────────────────────────
+#
+# `ctx.compaction` is realm-scoped. The shipped Web profile disables the
+# host-plane compaction rows
+# (dsh-web-app/cordis.patch.yml: `compaction-basic`, `command-compact`,
+# `tool-result-pruner`) and the `standard` agent preset mounts them inside an
+# isolate realm (`dsh-agent-presets/presets/standard/agent.cordis.yml`):
+#
+#   - id: compaction
+#     name: cordis:group
+#     isolate: { compaction: true, toolResultPruner: true }
+#
+# `tokenMeter`, `tools`, and `systemPrompt` deliberately stay on the HOST
+# plane, so a host-plane row CAN contribute the token-budget notice and the
+# `new_context` tool. It CANNOT become the agent's compaction backend.
+#
+# Two supported deployments, once the design lands:
+#
+#   1. Notice + tool only (host plane) — keep this row, set `enabled: true`.
+#      `compaction-basic` keeps owning pressure compaction; this plugin adds
+#      the budget notice and the model-facing reset request.
+#
+#   2. Reset backend (agent realm) — add the row to the preset instead of the
+#      profile, so it resolves `ctx.compaction` for that agent:
+#
+#        - id: compaction
+#          name: cordis:group
+#          isolate: { compaction: true, toolResultPruner: true }
+#          config:
+#            - id: context-window
+#              name: 'dsh-context-window'
+#              config: { enabled: true, resetMode: seam-region }
+#            # ...or replace compaction-basic entirely.
+#
+#   3. Handoff backend (agent realm) — `resetMode: handoff` additionally
+#      writes a checkpoint into the fresh window. This is the mode that avoids
+#      Codex's open issue #43335 (a reset window whose first request carries no
+#      task state) and is the intended default once implemented.
+- insert:
+    - id: context-window
+      name: 'dsh-context-window'
+      config:
+        enabled: false
