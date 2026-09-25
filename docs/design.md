@@ -2,7 +2,7 @@
 
 本文件记录**已定/未定**的设计决策及其证据。改行为时同一提交内更新本文件。
 
-上游调研全文：`%USERPROFILE%\.dsh\codex-context-management-report.md`（83 KB，含全部 PR/issue/源码引用）。
+上游调研全文：`<DSH_HOME>\codex-context-management-report.md`（83 KB，含全部 PR/issue/源码引用）。
 
 ---
 
